@@ -1,0 +1,115 @@
+# Quora Question Pair Similarity Detection - Plagiarism-Free Version
+
+# -------------------------------
+# 1. IMPORT LIBRARIES
+# -------------------------------
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from bs4 import BeautifulSoup
+import re
+from nltk.corpus import stopwords
+from nltk.stem import PorterStemmer
+from fuzzywuzzy import fuzz
+from sklearn.manifold import TSNE
+from sklearn.preprocessing import MinMaxScaler
+import spacy
+import warnings
+warnings.filterwarnings("ignore")
+
+# -------------------------------
+# 2. LOAD AND INSPECT DATA
+# -------------------------------
+df = pd.read_csv("data/train.csv")
+print(f"Total rows: {df.shape[0]}")
+print(df.head())
+
+# -------------------------------
+# 3. FILL NULL VALUES
+# -------------------------------
+df = df.fillna('')
+
+# -------------------------------
+# 4. TEXT CLEANING FUNCTION
+# -------------------------------
+STOP_WORDS = stopwords.words("english")
+
+def clean_text(text):
+    text = str(text).lower()
+    text = re.sub(r"[^a-zA-Z0-9]", " ", text)
+    text = text.replace(",000,000", "m").replace(",000", "k")
+    text = text.replace("won't", "will not").replace("can't", "cannot")
+    text = re.sub(r"n\'t", " not", text)
+    text = re.sub(r"\'re", " are", text)
+    text = re.sub(r"\'s", " is", text)
+    text = re.sub(r"\'d", " would", text)
+    text = re.sub(r"\'ll", " will", text)
+    text = re.sub(r"\'t", " not", text)
+    text = re.sub(r"\'ve", " have", text)
+    text = re.sub(r"\'m", " am", text)
+    text = BeautifulSoup(text, "lxml").get_text()
+    porter = PorterStemmer()
+    return " ".join([porter.stem(word) for word in text.split() if word not in STOP_WORDS])
+
+# -------------------------------
+# 5. APPLY CLEANING
+# -------------------------------
+df["question1"] = df["question1"].apply(clean_text)
+df["question2"] = df["question2"].apply(clean_text)
+
+# -------------------------------
+# 6. BASIC FEATURES
+# -------------------------------
+df['q1_len'] = df['question1'].apply(lambda x: len(x))
+df['q2_len'] = df['question2'].apply(lambda x: len(x))
+df['q1_words'] = df['question1'].apply(lambda x: len(x.split()))
+df['q2_words'] = df['question2'].apply(lambda x: len(x.split()))
+df['word_common'] = df.apply(lambda row: len(set(row['question1'].split()) & set(row['question2'].split())), axis=1)
+df['word_total'] = df['q1_words'] + df['q2_words']
+df['word_share'] = df['word_common'] / (df['word_total'] + 1)
+
+# -------------------------------
+# 7. FUZZY FEATURES
+# -------------------------------
+df['fuzz_ratio'] = df.apply(lambda x: fuzz.QRatio(x['question1'], x['question2']), axis=1)
+df['fuzz_partial'] = df.apply(lambda x: fuzz.partial_ratio(x['question1'], x['question2']), axis=1)
+df['fuzz_token_sort'] = df.apply(lambda x: fuzz.token_sort_ratio(x['question1'], x['question2']), axis=1)
+df['fuzz_token_set'] = df.apply(lambda x: fuzz.token_set_ratio(x['question1'], x['question2']), axis=1)
+
+# -------------------------------
+# 8. WORD2VEC EMBEDDINGS
+# -------------------------------
+nlp = spacy.load('en_core_web_sm')
+
+def get_w2v_vector(text):
+    doc = nlp(text)
+    return doc.vector
+
+df['q1_vec'] = df['question1'].apply(get_w2v_vector)
+df['q2_vec'] = df['question2'].apply(get_w2v_vector)
+
+# -------------------------------
+# 9. DIFFERENCE VECTORS
+# -------------------------------
+df['vec_diff'] = df.apply(lambda x: np.linalg.norm(x['q1_vec'] - x['q2_vec']), axis=1)
+
+# -------------------------------
+# 10. FINAL DATASET FOR MODEL
+# -------------------------------
+x_data = df[['q1_len', 'q2_len', 'q1_words', 'q2_words', 'word_common', 'word_share',
+             'fuzz_ratio', 'fuzz_partial', 'fuzz_token_sort', 'fuzz_token_set', 'vec_diff']]
+y_data = df['is_duplicate']
+
+# -------------------------------
+# 11. MODEL TRAINING
+# -------------------------------
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, log_loss
+
+X_train, X_test, y_train, y_test = train_test_split(x_data, y_data, test_size=0.2, random_state=42)
+model = GradientBoostingClassifier()
+model.fit(X_train, y_train)
+pred = model.predict(X_test)
+print(classification_report(y_test, pred))
