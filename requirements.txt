@@ -1,0 +1,9 @@
+numpy
+pandas
+scikit-learn
+nltk
+fuzzywuzzy
+python-Levenshtein
+xgboost
+gensim
+streamlit
